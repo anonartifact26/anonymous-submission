@@ -27,17 +27,16 @@ What this script does:
 Important:
 - This script does NOT fabricate outcomes.
 - All figures are generated from actual simulation outputs.
-
-Author note:
-- Designed to be paper-aligned, but still engineering-driven.
 """
 
 import os
 import re
 import json
 import math
+import argparse
 import warnings
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -58,10 +57,6 @@ warnings.filterwarnings("ignore")
 # ============================================================
 # Config
 # ============================================================
-
-ROOT = r"F:\NIPS"
-OUTDIR = os.path.join(ROOT, "outputs_main_stationary_batched_adult_bank_30seeds_fullviz")
-os.makedirs(OUTDIR, exist_ok=True)
 
 SEEDS = list(range(30))
 DATASET_ORDER = ["Adult", "BankMarketing"]
@@ -89,9 +84,6 @@ BOOTSTRAP_B = 10000
 BOOTSTRAP_RANDOM_SEED = 12345
 
 np.set_printoptions(precision=4, suppress=True)
-
-print(f"[INFO] ROOT={ROOT}")
-print(f"[INFO] OUTDIR={OUTDIR}")
 
 
 # ============================================================
@@ -132,6 +124,8 @@ def find_file_fuzzy(root: str, include_keywords: List[str]) -> Optional[str]:
             s += 4
         if ".txt" in low:
             s += 3
+        if "." not in os.path.basename(low):
+            s += 2
         return -s
 
     return sorted(candidates, key=score)[0]
@@ -177,7 +171,7 @@ def mean_ci95(arr: np.ndarray, axis=0) -> Tuple[np.ndarray, np.ndarray]:
     if n <= 1:
         return mean, np.zeros_like(mean)
     std = np.std(arr, axis=axis, ddof=1)
-    ci = 2.045 * std / np.sqrt(n)  # approx t_{0.975,29}
+    ci = 2.045 * std / np.sqrt(n)
     return mean, ci
 
 
@@ -202,10 +196,6 @@ def kl_bernoulli(p: float, q: float) -> float:
     p = min(max(float(p), eps), 1 - eps)
     q = min(max(float(q), eps), 1 - eps)
     return p * math.log(p / q) + (1 - p) * math.log((1 - p) / (1 - q))
-
-
-def ensure_dir(path: str):
-    os.makedirs(path, exist_ok=True)
 
 
 def bootstrap_ci_mean(x: np.ndarray, B: int = 10000, alpha: float = 0.05, seed: int = 12345) -> Tuple[float, float]:
@@ -590,6 +580,7 @@ def build_stationary_batched_env(
     tau: int,
     q_defense: float,
     n_base_attack_samples: int,
+    outdir: str,
     seed: int = 123
 ) -> StationaryBatchedEnv:
     rng = np.random.RandomState(seed)
@@ -665,7 +656,7 @@ def build_stationary_batched_env(
             best_pack = (dname, ps, means)
 
     diag_df = pd.DataFrame(diagnostics)
-    diag_df.to_csv(os.path.join(OUTDIR, f"{prepared.name}_env_direction_diagnostics.csv"), index=False)
+    diag_df.to_csv(os.path.join(outdir, f"{prepared.name}_env_direction_diagnostics.csv"), index=False)
 
     dname, success_probs, means = best_pack
     opt_arm = int(np.argmax(means))
@@ -798,10 +789,9 @@ class OSUBKLTrimmedBatch:
 def make_agent(algo_name: str, impacts: np.ndarray):
     if algo_name == "UCB":
         return UCBTrimmedBatch(impacts)
-    elif algo_name == "KLUCB_OSUB":
+    if algo_name == "KLUCB_OSUB":
         return OSUBKLTrimmedBatch(impacts, gamma_lead=GAMMA_LEAD)
-    else:
-        raise ValueError(f"Unknown algorithm: {algo_name}")
+    raise ValueError(f"Unknown algorithm: {algo_name}")
 
 
 # ============================================================
@@ -868,13 +858,13 @@ def run_single_seed_stationary_batched(
 # Build datasets
 # ============================================================
 
-def load_all_prepared_datasets() -> Dict[str, PreparedDataset]:
-    print("[INFO] Files under ROOT:")
-    for x in safe_listdir(ROOT):
+def load_all_prepared_datasets(data_root: str) -> Dict[str, PreparedDataset]:
+    print("[INFO] Files under data_root:")
+    for x in safe_listdir(data_root):
         print("   ", x)
 
-    adult_df = load_adult(ROOT)
-    bank_df = load_bank_marketing(ROOT)
+    adult_df = load_adult(data_root)
+    bank_df = load_bank_marketing(data_root)
 
     adult = prepare_dataset(adult_df, "Adult", "income")
     bank = prepare_dataset(bank_df, "BankMarketing", "target")
@@ -921,7 +911,7 @@ def plot_matrix_heatmap(
 # Plotting
 # ============================================================
 
-def plot_regret_curves_and_box(dataset_name: str, df_long: pd.DataFrame):
+def plot_regret_curves_and_box(dataset_name: str, df_long: pd.DataFrame, outdir: str):
     sub = df_long[df_long["dataset"] == dataset_name].copy()
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
@@ -965,13 +955,13 @@ def plot_regret_curves_and_box(dataset_name: str, df_long: pd.DataFrame):
     ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    outpath = os.path.join(OUTDIR, f"{dataset_name}_regret_curve_box.png")
+    outpath = os.path.join(outdir, f"{dataset_name}_regret_curve_box.png")
     plt.savefig(outpath, dpi=240)
     plt.close()
     print(f"[INFO] Saved figure: {outpath}")
 
 
-def plot_regret_violin(dataset_name: str, df_final: pd.DataFrame):
+def plot_regret_violin(dataset_name: str, df_final: pd.DataFrame, outdir: str):
     sub = df_final[df_final["dataset"] == dataset_name].copy()
 
     data = []
@@ -1003,13 +993,13 @@ def plot_regret_violin(dataset_name: str, df_final: pd.DataFrame):
     ax.grid(True, axis="y", alpha=0.3)
 
     plt.tight_layout()
-    outpath = os.path.join(OUTDIR, f"{dataset_name}_final_regret_violin.png")
+    outpath = os.path.join(outdir, f"{dataset_name}_final_regret_violin.png")
     plt.savefig(outpath, dpi=240)
     plt.close()
     print(f"[INFO] Saved figure: {outpath}")
 
 
-def plot_environment_profile(env: StationaryBatchedEnv):
+def plot_environment_profile(env: StationaryBatchedEnv, outdir: str):
     fig, ax = plt.subplots(1, 1, figsize=(8.2, 4.8))
     x = np.arange(env.K)
 
@@ -1026,13 +1016,13 @@ def plot_environment_profile(env: StationaryBatchedEnv):
     ax.legend()
     plt.tight_layout()
 
-    outpath = os.path.join(OUTDIR, f"{env.name}_environment_profile.png")
+    outpath = os.path.join(outdir, f"{env.name}_environment_profile.png")
     plt.savefig(outpath, dpi=240)
     plt.close()
     print(f"[INFO] Saved figure: {outpath}")
 
 
-def plot_paired_scatter(dataset_name: str, df_final: pd.DataFrame):
+def plot_paired_scatter(dataset_name: str, df_final: pd.DataFrame, outdir: str):
     sub = df_final[df_final["dataset"] == dataset_name].copy()
     piv = sub.pivot(index="seed", columns="algorithm", values="final_realized_regret")
 
@@ -1062,13 +1052,13 @@ def plot_paired_scatter(dataset_name: str, df_final: pd.DataFrame):
             bbox=dict(facecolor="white", alpha=0.75, edgecolor="gray"))
 
     plt.tight_layout()
-    outpath = os.path.join(OUTDIR, f"{dataset_name}_paired_scatter.png")
+    outpath = os.path.join(outdir, f"{dataset_name}_paired_scatter.png")
     plt.savefig(outpath, dpi=240)
     plt.close()
     print(f"[INFO] Saved figure: {outpath}")
 
 
-def plot_arm_trajectory(dataset_name: str, df_long: pd.DataFrame, env: StationaryBatchedEnv):
+def plot_arm_trajectory(dataset_name: str, df_long: pd.DataFrame, env: StationaryBatchedEnv, outdir: str):
     sub = df_long[df_long["dataset"] == dataset_name].copy()
 
     fig, ax = plt.subplots(figsize=(8.4, 4.8))
@@ -1092,13 +1082,13 @@ def plot_arm_trajectory(dataset_name: str, df_long: pd.DataFrame, env: Stationar
     ax.legend()
     plt.tight_layout()
 
-    outpath = os.path.join(OUTDIR, f"{dataset_name}_arm_trajectory.png")
+    outpath = os.path.join(outdir, f"{dataset_name}_arm_trajectory.png")
     plt.savefig(outpath, dpi=240)
     plt.close()
     print(f"[INFO] Saved figure: {outpath}")
 
 
-def plot_arm_pull_heatmaps(dataset_name: str, df_arms: pd.DataFrame, env: StationaryBatchedEnv):
+def plot_arm_pull_heatmaps(dataset_name: str, df_arms: pd.DataFrame, env: StationaryBatchedEnv, outdir: str):
     for algo in ALGORITHMS:
         sub = df_arms[(df_arms["dataset"] == dataset_name) & (df_arms["algorithm"] == algo)].copy()
 
@@ -1121,13 +1111,13 @@ def plot_arm_pull_heatmaps(dataset_name: str, df_arms: pd.DataFrame, env: Statio
         plt.colorbar(im, ax=ax, label="# batches")
         plt.tight_layout()
 
-        outpath = os.path.join(OUTDIR, f"{dataset_name}_{algo}_arm_pull_heatmap.png")
+        outpath = os.path.join(outdir, f"{dataset_name}_{algo}_arm_pull_heatmap.png")
         plt.savefig(outpath, dpi=240)
         plt.close()
         print(f"[INFO] Saved figure: {outpath}")
 
 
-def plot_relative_improvement(df_final: pd.DataFrame):
+def plot_relative_improvement(df_final: pd.DataFrame, outdir: str):
     rows = []
     for dataset in DATASET_ORDER:
         sub = df_final[df_final["dataset"] == dataset]
@@ -1151,14 +1141,13 @@ def plot_relative_improvement(df_final: pd.DataFrame):
     ax.grid(True, axis="y", alpha=0.3)
     plt.tight_layout()
 
-    outpath = os.path.join(OUTDIR, "relative_improvement_bar.png")
+    outpath = os.path.join(outdir, "relative_improvement_bar.png")
     plt.savefig(outpath, dpi=240)
     plt.close()
     print(f"[INFO] Saved figure: {outpath}")
 
 
-def plot_global_heatmaps(df_final: pd.DataFrame, df_neigh: pd.DataFrame):
-    # mean final regret heatmap
+def plot_global_heatmaps(df_final: pd.DataFrame, df_neigh: pd.DataFrame, outdir: str):
     mat = np.zeros((len(DATASET_ORDER), len(ALGORITHMS)), dtype=float)
     for i, ds in enumerate(DATASET_ORDER):
         for j, algo in enumerate(ALGORITHMS):
@@ -1169,12 +1158,11 @@ def plot_global_heatmaps(df_final: pd.DataFrame, df_neigh: pd.DataFrame):
         row_labels=DATASET_ORDER,
         col_labels=[LABEL_MAP[a] for a in ALGORITHMS],
         title="Mean final realized regret",
-        outpath=os.path.join(OUTDIR, "heatmap_mean_final_regret.png"),
+        outpath=os.path.join(outdir, "heatmap_mean_final_regret.png"),
         fmt=".2f",
         cmap="magma"
     )
 
-    # neighborhood concentration heatmap
     mat2 = np.zeros((len(DATASET_ORDER), len(ALGORITHMS)), dtype=float)
     for i, ds in enumerate(DATASET_ORDER):
         for j, algo in enumerate(ALGORITHMS):
@@ -1185,12 +1173,11 @@ def plot_global_heatmaps(df_final: pd.DataFrame, df_neigh: pd.DataFrame):
         row_labels=DATASET_ORDER,
         col_labels=[LABEL_MAP[a] for a in ALGORITHMS],
         title="Mean optimal-neighborhood concentration",
-        outpath=os.path.join(OUTDIR, "heatmap_optimal_neighborhood_concentration.png"),
+        outpath=os.path.join(outdir, "heatmap_optimal_neighborhood_concentration.png"),
         fmt=".3f",
         cmap="viridis"
     )
 
-    # KL-UCB win-rate heatmap vs UCB
     mat3 = np.zeros((len(DATASET_ORDER), 1), dtype=float)
     for i, ds in enumerate(DATASET_ORDER):
         piv = df_final[df_final["dataset"] == ds].pivot(index="seed", columns="algorithm", values="final_realized_regret")
@@ -1202,7 +1189,7 @@ def plot_global_heatmaps(df_final: pd.DataFrame, df_neigh: pd.DataFrame):
         row_labels=DATASET_ORDER,
         col_labels=["KL-UCB beats UCB"],
         title="Win-rate heatmap",
-        outpath=os.path.join(OUTDIR, "heatmap_win_rate.png"),
+        outpath=os.path.join(outdir, "heatmap_win_rate.png"),
         fmt=".3f",
         cmap="plasma"
     )
@@ -1216,7 +1203,8 @@ def build_summary_tables(
     df_long: pd.DataFrame,
     df_final: pd.DataFrame,
     df_arms: pd.DataFrame,
-    env_map: Dict[str, StationaryBatchedEnv]
+    env_map: Dict[str, StationaryBatchedEnv],
+    outdir: str
 ):
     rows = []
     detailed_rows = []
@@ -1275,10 +1263,10 @@ def build_summary_tables(
         })
 
     summary_df = pd.DataFrame(rows)
-    summary_df.to_csv(os.path.join(OUTDIR, "summary_final_regret.csv"), index=False)
+    summary_df.to_csv(os.path.join(outdir, "summary_final_regret.csv"), index=False)
 
     summary_detailed_df = pd.DataFrame(detailed_rows)
-    summary_detailed_df.to_csv(os.path.join(OUTDIR, "summary_final_regret_detailed.csv"), index=False)
+    summary_detailed_df.to_csv(os.path.join(outdir, "summary_final_regret_detailed.csv"), index=False)
 
     pair_rows = []
     sig_rows = []
@@ -1361,12 +1349,11 @@ def build_summary_tables(
             })
 
     pair_df = pd.DataFrame(pair_rows)
-    pair_df.to_csv(os.path.join(OUTDIR, "paired_comparison.csv"), index=False)
+    pair_df.to_csv(os.path.join(outdir, "paired_comparison.csv"), index=False)
 
     sig_df = pd.DataFrame(sig_rows)
-    sig_df.to_csv(os.path.join(OUTDIR, "paired_significance_tests.csv"), index=False)
+    sig_df.to_csv(os.path.join(outdir, "paired_significance_tests.csv"), index=False)
 
-    # neighborhood concentration
     neigh_rows = []
     for dataset in DATASET_ORDER:
         env = env_map[dataset]
@@ -1390,9 +1377,8 @@ def build_summary_tables(
                 "opt_arm_fraction": opt_frac
             })
     df_neigh = pd.DataFrame(neigh_rows)
-    df_neigh.to_csv(os.path.join(OUTDIR, "optimal_neighborhood_concentration.csv"), index=False)
+    df_neigh.to_csv(os.path.join(outdir, "optimal_neighborhood_concentration.csv"), index=False)
 
-    # anti-too-good-to-be-true checks
     suspicion_rows = []
     for dataset in DATASET_ORDER:
         env = env_map[dataset]
@@ -1415,20 +1401,37 @@ def build_summary_tables(
             "too_good_flag_ratio_below_0_5": bool(ratio < 0.5),
         })
     df_susp = pd.DataFrame(suspicion_rows)
-    df_susp.to_csv(os.path.join(OUTDIR, "anti_too_good_checks.csv"), index=False)
+    df_susp.to_csv(os.path.join(outdir, "anti_too_good_checks.csv"), index=False)
 
     endpoint = df_long.groupby(["dataset", "algorithm", "seed"])["cum_realized_regret"].last().reset_index()
-    endpoint.to_csv(os.path.join(OUTDIR, "final_realized_regret_by_seed.csv"), index=False)
+    endpoint.to_csv(os.path.join(outdir, "final_realized_regret_by_seed.csv"), index=False)
 
     arm_summary = (
         df_arms.groupby(["dataset", "algorithm", "arm"], as_index=False)["n_batches"]
         .sum()
         .sort_values(["dataset", "algorithm", "arm"])
     )
-    arm_summary.to_csv(os.path.join(OUTDIR, "arm_pull_counts_aggregated.csv"), index=False)
+    arm_summary.to_csv(os.path.join(outdir, "arm_pull_counts_aggregated.csv"), index=False)
 
-    print(f"[INFO] Saved summaries to {OUTDIR}")
+    print(f"[INFO] Saved summaries to {outdir}")
     return df_neigh
+
+
+# ============================================================
+# CLI
+# ============================================================
+
+def parse_args():
+    script_dir = Path(__file__).resolve().parent
+    project_root_default = script_dir.parent if script_dir.name == "scripts" else script_dir
+    data_root_default = project_root_default / "data"
+    outdir_default = project_root_default / "outputs" / "main_stationary_batched"
+
+    parser = argparse.ArgumentParser(description="Stationary arm-resolved batched feedback experiment.")
+    parser.add_argument("--project_root", type=str, default=str(project_root_default))
+    parser.add_argument("--data_root", type=str, default=str(data_root_default))
+    parser.add_argument("--outdir", type=str, default=str(outdir_default))
+    return parser.parse_args()
 
 
 # ============================================================
@@ -1436,7 +1439,18 @@ def build_summary_tables(
 # ============================================================
 
 def main():
-    prepared_map = load_all_prepared_datasets()
+    args = parse_args()
+
+    project_root = Path(args.project_root).resolve()
+    data_root = Path(args.data_root).resolve()
+    outdir = Path(args.outdir).resolve()
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    print(f"[INFO] PROJECT_ROOT={project_root}")
+    print(f"[INFO] DATA_ROOT={data_root}")
+    print(f"[INFO] OUTDIR={outdir}")
+
+    prepared_map = load_all_prepared_datasets(str(data_root))
 
     env_map: Dict[str, StationaryBatchedEnv] = {}
     env_rows = []
@@ -1448,6 +1462,7 @@ def main():
             tau=TAU,
             q_defense=Q_DEFENSE,
             n_base_attack_samples=N_BASE_ATTACK_SAMPLES,
+            outdir=str(outdir),
             seed=123
         )
         env_map[name] = env
@@ -1473,7 +1488,7 @@ def main():
             "mean_rewards": json.dumps([float(x) for x in env.mean_rewards]),
         })
 
-    pd.DataFrame(env_rows).to_csv(os.path.join(OUTDIR, "environment_summary.csv"), index=False)
+    pd.DataFrame(env_rows).to_csv(outdir / "environment_summary.csv", index=False)
 
     long_rows = []
     final_rows = []
@@ -1528,30 +1543,29 @@ def main():
     df_final = pd.DataFrame(final_rows)
     df_arms = pd.DataFrame(arm_rows)
 
-    df_long.to_csv(os.path.join(OUTDIR, "robustness_long.csv"), index=False)
-    df_final.to_csv(os.path.join(OUTDIR, "robustness_final.csv"), index=False)
-    df_arms.to_csv(os.path.join(OUTDIR, "arm_pull_counts.csv"), index=False)
+    df_long.to_csv(outdir / "robustness_long.csv", index=False)
+    df_final.to_csv(outdir / "robustness_final.csv", index=False)
+    df_arms.to_csv(outdir / "arm_pull_counts.csv", index=False)
 
-    df_neigh = build_summary_tables(df_long, df_final, df_arms, env_map)
+    df_neigh = build_summary_tables(df_long, df_final, df_arms, env_map, str(outdir))
 
-    # environment plots
     for dataset_name in DATASET_ORDER:
-        plot_environment_profile(env_map[dataset_name])
+        plot_environment_profile(env_map[dataset_name], str(outdir))
 
-    # main plots per dataset
     for dataset_name in DATASET_ORDER:
-        plot_regret_curves_and_box(dataset_name, df_long)
-        plot_regret_violin(dataset_name, df_final)
-        plot_paired_scatter(dataset_name, df_final)
-        plot_arm_trajectory(dataset_name, df_long, env_map[dataset_name])
-        plot_arm_pull_heatmaps(dataset_name, df_arms, env_map[dataset_name])
+        plot_regret_curves_and_box(dataset_name, df_long, str(outdir))
+        plot_regret_violin(dataset_name, df_final, str(outdir))
+        plot_paired_scatter(dataset_name, df_final, str(outdir))
+        plot_arm_trajectory(dataset_name, df_long, env_map[dataset_name], str(outdir))
+        plot_arm_pull_heatmaps(dataset_name, df_arms, env_map[dataset_name], str(outdir))
 
-    # global plots
-    plot_relative_improvement(df_final)
-    plot_global_heatmaps(df_final, df_neigh)
+    plot_relative_improvement(df_final, str(outdir))
+    plot_global_heatmaps(df_final, df_neigh, str(outdir))
 
     run_config = {
-        "root": ROOT,
+        "project_root": str(project_root),
+        "data_root": str(data_root),
+        "outdir": str(outdir),
         "datasets": DATASET_ORDER,
         "seeds": SEEDS,
         "K": K,
@@ -1565,11 +1579,11 @@ def main():
         "bootstrap_B": BOOTSTRAP_B,
         "bootstrap_random_seed": BOOTSTRAP_RANDOM_SEED
     }
-    with open(os.path.join(OUTDIR, "run_config.json"), "w", encoding="utf-8") as f:
+    with open(outdir / "run_config.json", "w", encoding="utf-8") as f:
         json.dump(run_config, f, indent=2)
 
     print("\n[INFO] Done.")
-    print(f"[INFO] Outputs saved to: {OUTDIR}")
+    print(f"[INFO] Outputs saved to: {outdir}")
 
 
 if __name__ == "__main__":
