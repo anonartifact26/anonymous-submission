@@ -44,8 +44,10 @@ import os
 import re
 import json
 import math
+import argparse
 import warnings
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -62,18 +64,13 @@ warnings.filterwarnings("ignore")
 
 
 # ============================================================
-# Config
+# Default config
 # ============================================================
-
-ROOT = r"F:\NIPS"
-OUTDIR = os.path.join(ROOT, "outputs_exp_all_sensitivity_stationary_batched")
-os.makedirs(OUTDIR, exist_ok=True)
 
 SEEDS = list(range(30))
 DATASET_ORDER = ["Adult", "BankMarketing"]
 ALGORITHMS = ["UCB", "KLUCB_OSUB"]
 
-# Baseline configuration
 BASE_K = 11
 BASE_TAU = 20
 BASE_Q = 0.15
@@ -81,7 +78,6 @@ T_BATCHES = 140
 N_BASE_ATTACK_SAMPLES = 3000
 GAMMA_LEAD = 2
 
-# Sensitivity grids
 K_LIST = [7, 11, 15, 21]
 TAU_LIST = [5, 10, 20, 50]
 Q_LIST = [0.05, 0.10, 0.15, 0.20, 0.30]
@@ -96,9 +92,6 @@ LABEL_MAP = {
 }
 
 np.set_printoptions(precision=4, suppress=True)
-
-print(f"[INFO] ROOT={ROOT}")
-print(f"[INFO] OUTDIR={OUTDIR}")
 
 
 # ============================================================
@@ -139,6 +132,8 @@ def find_file_fuzzy(root: str, include_keywords: List[str]) -> Optional[str]:
             s += 4
         if ".txt" in low:
             s += 3
+        if "." not in os.path.basename(low):
+            s += 2
         return -s
 
     return sorted(candidates, key=score)[0]
@@ -733,10 +728,9 @@ class OSUBKLTrimmedBatch:
 def make_agent(algo_name: str, impacts: np.ndarray):
     if algo_name == "UCB":
         return UCBTrimmedBatch(impacts)
-    elif algo_name == "KLUCB_OSUB":
+    if algo_name == "KLUCB_OSUB":
         return OSUBKLTrimmedBatch(impacts, gamma_lead=GAMMA_LEAD)
-    else:
-        raise ValueError(f"Unknown algorithm: {algo_name}")
+    raise ValueError(f"Unknown algorithm: {algo_name}")
 
 
 # ============================================================
@@ -788,13 +782,13 @@ def run_single_seed_stationary_batched(
 # Load datasets
 # ============================================================
 
-def load_all_prepared_datasets() -> Dict[str, PreparedDataset]:
-    print("[INFO] Files under ROOT:")
-    for x in safe_listdir(ROOT):
+def load_all_prepared_datasets(data_root: str) -> Dict[str, PreparedDataset]:
+    print("[INFO] Files under data_root:")
+    for x in safe_listdir(data_root):
         print("   ", x)
 
-    adult_df = load_adult(ROOT)
-    bank_df = load_bank_marketing(ROOT)
+    adult_df = load_adult(data_root)
+    bank_df = load_bank_marketing(data_root)
 
     adult = prepare_dataset(adult_df, "Adult", "income")
     bank = prepare_dataset(bank_df, "BankMarketing", "target")
@@ -814,11 +808,6 @@ def run_sensitivity_block(
     fixed_tau: int,
     fixed_q: float
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Returns:
-        df_env, df_final, df_curve
-    """
-
     env_rows = []
     final_rows = []
     curve_rows = []
@@ -919,7 +908,7 @@ def run_sensitivity_block(
 # Plotting
 # ============================================================
 
-def plot_sensitivity_lines(df_final: pd.DataFrame, block_name: str, varying_name: str, varying_values: List):
+def plot_sensitivity_lines(df_final: pd.DataFrame, outdir: str, block_name: str, varying_name: str, varying_values: List):
     for dataset_name in DATASET_ORDER:
         sub = df_final[(df_final["block"] == block_name) & (df_final["dataset"] == dataset_name)].copy()
 
@@ -949,13 +938,13 @@ def plot_sensitivity_lines(df_final: pd.DataFrame, block_name: str, varying_name
         ax.legend()
         plt.tight_layout()
 
-        outpath = os.path.join(OUTDIR, f"{block_name}_{dataset_name}_line.png")
+        outpath = os.path.join(outdir, f"{block_name}_{dataset_name}_line.png")
         plt.savefig(outpath, dpi=240)
         plt.close()
         print(f"[INFO] Saved figure: {outpath}")
 
 
-def plot_win_rate_lines(df_final: pd.DataFrame, block_name: str, varying_name: str, varying_values: List):
+def plot_win_rate_lines(df_final: pd.DataFrame, outdir: str, block_name: str, varying_name: str, varying_values: List):
     fig, ax = plt.subplots(figsize=(7.4, 4.8))
 
     for dataset_name in DATASET_ORDER:
@@ -983,13 +972,13 @@ def plot_win_rate_lines(df_final: pd.DataFrame, block_name: str, varying_name: s
     ax.legend()
     plt.tight_layout()
 
-    outpath = os.path.join(OUTDIR, f"{block_name}_win_rate_line.png")
+    outpath = os.path.join(outdir, f"{block_name}_win_rate_line.png")
     plt.savefig(outpath, dpi=240)
     plt.close()
     print(f"[INFO] Saved figure: {outpath}")
 
 
-def plot_relative_improvement_lines(df_final: pd.DataFrame, block_name: str, varying_name: str, varying_values: List):
+def plot_relative_improvement_lines(df_final: pd.DataFrame, outdir: str, block_name: str, varying_name: str, varying_values: List):
     fig, ax = plt.subplots(figsize=(7.4, 4.8))
 
     for dataset_name in DATASET_ORDER:
@@ -1018,14 +1007,13 @@ def plot_relative_improvement_lines(df_final: pd.DataFrame, block_name: str, var
     ax.legend()
     plt.tight_layout()
 
-    outpath = os.path.join(OUTDIR, f"{block_name}_relative_improvement.png")
+    outpath = os.path.join(outdir, f"{block_name}_relative_improvement.png")
     plt.savefig(outpath, dpi=240)
     plt.close()
     print(f"[INFO] Saved figure: {outpath}")
 
 
-def plot_block_heatmaps(df_final: pd.DataFrame, block_name: str, varying_name: str, varying_values: List):
-    # mean final regret heatmap
+def plot_block_heatmaps(df_final: pd.DataFrame, outdir: str, block_name: str, varying_name: str, varying_values: List):
     row_labels = DATASET_ORDER
     col_labels = [str(v) for v in varying_values]
 
@@ -1045,12 +1033,11 @@ def plot_block_heatmaps(df_final: pd.DataFrame, block_name: str, varying_name: s
         row_labels=row_labels,
         col_labels=col_labels,
         title=f"{block_name}: mean final regret of KL-UCB",
-        outpath=os.path.join(OUTDIR, f"{block_name}_heatmap_klucb_mean_regret.png"),
+        outpath=os.path.join(outdir, f"{block_name}_heatmap_klucb_mean_regret.png"),
         fmt=".2f",
         cmap="magma"
     )
 
-    # win rate heatmap
     mat2 = np.zeros((len(DATASET_ORDER), len(varying_values)), dtype=float)
     for i, ds in enumerate(DATASET_ORDER):
         for j, v in enumerate(varying_values):
@@ -1067,13 +1054,13 @@ def plot_block_heatmaps(df_final: pd.DataFrame, block_name: str, varying_name: s
         row_labels=row_labels,
         col_labels=col_labels,
         title=f"{block_name}: KL-UCB win rate heatmap",
-        outpath=os.path.join(OUTDIR, f"{block_name}_heatmap_win_rate.png"),
+        outpath=os.path.join(outdir, f"{block_name}_heatmap_win_rate.png"),
         fmt=".3f",
         cmap="plasma"
     )
 
 
-def plot_combined_heatmap(df_final: pd.DataFrame):
+def plot_combined_heatmap(df_final: pd.DataFrame, outdir: str):
     summary = (
         df_final.groupby(["block", "dataset", "algorithm"], as_index=False)["final_realized_regret"]
         .mean()
@@ -1101,7 +1088,7 @@ def plot_combined_heatmap(df_final: pd.DataFrame):
         row_labels=rows,
         col_labels=[LABEL_MAP[a] for a in ALGORITHMS],
         title="Combined mean final realized regret",
-        outpath=os.path.join(OUTDIR, "combined_heatmap_mean_final_regret.png"),
+        outpath=os.path.join(outdir, "combined_heatmap_mean_final_regret.png"),
         fmt=".2f",
         cmap="viridis"
     )
@@ -1111,10 +1098,10 @@ def plot_combined_heatmap(df_final: pd.DataFrame):
 # Summaries
 # ============================================================
 
-def save_block_summaries(df_env: pd.DataFrame, df_final: pd.DataFrame, df_curve: pd.DataFrame, block_name: str):
-    df_env.to_csv(os.path.join(OUTDIR, f"{block_name}_environment_summary.csv"), index=False)
-    df_final.to_csv(os.path.join(OUTDIR, f"{block_name}_final.csv"), index=False)
-    df_curve.to_csv(os.path.join(OUTDIR, f"{block_name}_curves_long.csv"), index=False)
+def save_block_summaries(df_env: pd.DataFrame, df_final: pd.DataFrame, df_curve: pd.DataFrame, outdir: str, block_name: str):
+    df_env.to_csv(os.path.join(outdir, f"{block_name}_environment_summary.csv"), index=False)
+    df_final.to_csv(os.path.join(outdir, f"{block_name}_final.csv"), index=False)
+    df_curve.to_csv(os.path.join(outdir, f"{block_name}_curves_long.csv"), index=False)
 
     summary_rows = []
     for (dataset, algorithm, varying_value), sub in df_final.groupby(["dataset", "algorithm", "varying_value"]):
@@ -1133,7 +1120,7 @@ def save_block_summaries(df_env: pd.DataFrame, df_final: pd.DataFrame, df_curve:
             "std_final_pseudo_regret": float(np.std(pvals, ddof=1)) if len(pvals) > 1 else 0.0
         })
 
-    pd.DataFrame(summary_rows).to_csv(os.path.join(OUTDIR, f"{block_name}_summary.csv"), index=False)
+    pd.DataFrame(summary_rows).to_csv(os.path.join(outdir, f"{block_name}_summary.csv"), index=False)
 
     pair_rows = []
     for (dataset, varying_value), sub in df_final.groupby(["dataset", "varying_value"]):
@@ -1153,7 +1140,24 @@ def save_block_summaries(df_env: pd.DataFrame, df_final: pd.DataFrame, df_curve:
                 "ties": int(np.sum(u == k)),
             })
 
-    pd.DataFrame(pair_rows).to_csv(os.path.join(OUTDIR, f"{block_name}_paired_comparison.csv"), index=False)
+    pd.DataFrame(pair_rows).to_csv(os.path.join(outdir, f"{block_name}_paired_comparison.csv"), index=False)
+
+
+# ============================================================
+# CLI
+# ============================================================
+
+def parse_args():
+    script_dir = Path(__file__).resolve().parent
+    project_root_default = script_dir.parent if script_dir.name == "scripts" else script_dir
+    data_root_default = project_root_default / "data"
+    outdir_default = project_root_default / "outputs" / "sensitivity_stationary_batched"
+
+    parser = argparse.ArgumentParser(description="Sensitivity analysis for stationary batched feedback.")
+    parser.add_argument("--project_root", type=str, default=str(project_root_default))
+    parser.add_argument("--data_root", type=str, default=str(data_root_default))
+    parser.add_argument("--outdir", type=str, default=str(outdir_default))
+    return parser.parse_args()
 
 
 # ============================================================
@@ -1161,11 +1165,19 @@ def save_block_summaries(df_env: pd.DataFrame, df_final: pd.DataFrame, df_curve:
 # ============================================================
 
 def main():
-    prepared_map = load_all_prepared_datasets()
+    args = parse_args()
 
-    # --------------------------------------------------------
-    # 1) K sensitivity
-    # --------------------------------------------------------
+    project_root = Path(args.project_root).resolve()
+    data_root = Path(args.data_root).resolve()
+    outdir = Path(args.outdir).resolve()
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    print(f"[INFO] PROJECT_ROOT={project_root}")
+    print(f"[INFO] DATA_ROOT={data_root}")
+    print(f"[INFO] OUTDIR={outdir}")
+
+    prepared_map = load_all_prepared_datasets(str(data_root))
+
     df_env_k, df_final_k, df_curve_k = run_sensitivity_block(
         block_name="K_sensitivity",
         prepared_map=prepared_map,
@@ -1175,15 +1187,12 @@ def main():
         fixed_tau=BASE_TAU,
         fixed_q=BASE_Q
     )
-    save_block_summaries(df_env_k, df_final_k, df_curve_k, "K_sensitivity")
-    plot_sensitivity_lines(df_final_k, "K_sensitivity", "K", K_LIST)
-    plot_win_rate_lines(df_final_k, "K_sensitivity", "K", K_LIST)
-    plot_relative_improvement_lines(df_final_k, "K_sensitivity", "K", K_LIST)
-    plot_block_heatmaps(df_final_k, "K_sensitivity", "K", K_LIST)
+    save_block_summaries(df_env_k, df_final_k, df_curve_k, str(outdir), "K_sensitivity")
+    plot_sensitivity_lines(df_final_k, str(outdir), "K_sensitivity", "K", K_LIST)
+    plot_win_rate_lines(df_final_k, str(outdir), "K_sensitivity", "K", K_LIST)
+    plot_relative_improvement_lines(df_final_k, str(outdir), "K_sensitivity", "K", K_LIST)
+    plot_block_heatmaps(df_final_k, str(outdir), "K_sensitivity", "K", K_LIST)
 
-    # --------------------------------------------------------
-    # 2) Tau sensitivity
-    # --------------------------------------------------------
     df_env_tau, df_final_tau, df_curve_tau = run_sensitivity_block(
         block_name="Tau_sensitivity",
         prepared_map=prepared_map,
@@ -1193,15 +1202,12 @@ def main():
         fixed_tau=BASE_TAU,
         fixed_q=BASE_Q
     )
-    save_block_summaries(df_env_tau, df_final_tau, df_curve_tau, "Tau_sensitivity")
-    plot_sensitivity_lines(df_final_tau, "Tau_sensitivity", "tau", TAU_LIST)
-    plot_win_rate_lines(df_final_tau, "Tau_sensitivity", "tau", TAU_LIST)
-    plot_relative_improvement_lines(df_final_tau, "Tau_sensitivity", "tau", TAU_LIST)
-    plot_block_heatmaps(df_final_tau, "Tau_sensitivity", "tau", TAU_LIST)
+    save_block_summaries(df_env_tau, df_final_tau, df_curve_tau, str(outdir), "Tau_sensitivity")
+    plot_sensitivity_lines(df_final_tau, str(outdir), "Tau_sensitivity", "tau", TAU_LIST)
+    plot_win_rate_lines(df_final_tau, str(outdir), "Tau_sensitivity", "tau", TAU_LIST)
+    plot_relative_improvement_lines(df_final_tau, str(outdir), "Tau_sensitivity", "tau", TAU_LIST)
+    plot_block_heatmaps(df_final_tau, str(outdir), "Tau_sensitivity", "tau", TAU_LIST)
 
-    # --------------------------------------------------------
-    # 3) Q sensitivity
-    # --------------------------------------------------------
     df_env_q, df_final_q, df_curve_q = run_sensitivity_block(
         block_name="Q_sensitivity",
         prepared_map=prepared_map,
@@ -1211,20 +1217,19 @@ def main():
         fixed_tau=BASE_TAU,
         fixed_q=BASE_Q
     )
-    save_block_summaries(df_env_q, df_final_q, df_curve_q, "Q_sensitivity")
-    plot_sensitivity_lines(df_final_q, "Q_sensitivity", "q", Q_LIST)
-    plot_win_rate_lines(df_final_q, "Q_sensitivity", "q", Q_LIST)
-    plot_relative_improvement_lines(df_final_q, "Q_sensitivity", "q", Q_LIST)
-    plot_block_heatmaps(df_final_q, "Q_sensitivity", "q", Q_LIST)
+    save_block_summaries(df_env_q, df_final_q, df_curve_q, str(outdir), "Q_sensitivity")
+    plot_sensitivity_lines(df_final_q, str(outdir), "Q_sensitivity", "q", Q_LIST)
+    plot_win_rate_lines(df_final_q, str(outdir), "Q_sensitivity", "q", Q_LIST)
+    plot_relative_improvement_lines(df_final_q, str(outdir), "Q_sensitivity", "q", Q_LIST)
+    plot_block_heatmaps(df_final_q, str(outdir), "Q_sensitivity", "q", Q_LIST)
 
-    # combined outputs
     df_all_env = pd.concat([df_env_k, df_env_tau, df_env_q], axis=0, ignore_index=True)
     df_all_final = pd.concat([df_final_k, df_final_tau, df_final_q], axis=0, ignore_index=True)
     df_all_curve = pd.concat([df_curve_k, df_curve_tau, df_curve_q], axis=0, ignore_index=True)
 
-    df_all_env.to_csv(os.path.join(OUTDIR, "all_environment_summary.csv"), index=False)
-    df_all_final.to_csv(os.path.join(OUTDIR, "all_final_results.csv"), index=False)
-    df_all_curve.to_csv(os.path.join(OUTDIR, "all_curves_long.csv"), index=False)
+    df_all_env.to_csv(outdir / "all_environment_summary.csv", index=False)
+    df_all_final.to_csv(outdir / "all_final_results.csv", index=False)
+    df_all_curve.to_csv(outdir / "all_curves_long.csv", index=False)
 
     combined_summary = (
         df_all_final.groupby(["block", "dataset", "algorithm"], as_index=False)
@@ -1235,12 +1240,14 @@ def main():
             n=("final_realized_regret", "size")
         )
     )
-    combined_summary.to_csv(os.path.join(OUTDIR, "combined_summary.csv"), index=False)
+    combined_summary.to_csv(outdir / "combined_summary.csv", index=False)
 
-    plot_combined_heatmap(df_all_final)
+    plot_combined_heatmap(df_all_final, str(outdir))
 
     run_config = {
-        "root": ROOT,
+        "project_root": str(project_root),
+        "data_root": str(data_root),
+        "outdir": str(outdir),
         "datasets": DATASET_ORDER,
         "algorithms": ALGORITHMS,
         "seeds": SEEDS,
@@ -1256,11 +1263,11 @@ def main():
         "n_base_attack_samples": N_BASE_ATTACK_SAMPLES,
         "gamma_lead": GAMMA_LEAD
     }
-    with open(os.path.join(OUTDIR, "run_config.json"), "w", encoding="utf-8") as f:
+    with open(outdir / "run_config.json", "w", encoding="utf-8") as f:
         json.dump(run_config, f, indent=2)
 
     print("\n[INFO] All sensitivity experiments completed.")
-    print(f"[INFO] Outputs saved to: {OUTDIR}")
+    print(f"[INFO] Outputs saved to: {outdir}")
 
 
 if __name__ == "__main__":
