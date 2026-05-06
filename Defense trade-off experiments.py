@@ -16,9 +16,11 @@ import os
 import re
 import json
 import math
+import argparse
 import warnings
 from dataclasses import dataclass
 from collections import deque
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -40,26 +42,17 @@ warnings.filterwarnings("ignore")
 # Config
 # ============================================================
 
-ROOT = r"F:\NIPS"
-OUTDIR = os.path.join(ROOT, "outputs_paper_final_tradeoff_and_baselines")
-FIGDIR = os.path.join(OUTDIR, "figures")
-os.makedirs(OUTDIR, exist_ok=True)
-os.makedirs(FIGDIR, exist_ok=True)
-
 SEEDS = list(range(30))
 DATASET_ORDER = ["Adult", "BankMarketing"]
 
-# Stationary baseline list
 STATIONARY_ALGORITHMS = ["UCB", "KLUCB_GLOBAL", "TS_GLOBAL", "OSUB_KL"]
 
-# Nonstationary baseline list
 NONSTATIONARY_ALGORITHMS = [
     "UCB", "KLUCB_GLOBAL", "TS_GLOBAL",
     "SW_UCB", "D_UCB", "CUSUM_UCB", "SW_KLUCB",
     "UCB_PH", "KLUCB_PH", "OSUB_KL", "OSUB_KL_PH"
 ]
 
-# Core experimental config
 K = 11
 DEFAULT_TAU = 20
 Q_DEFENSE = 0.15
@@ -68,7 +61,6 @@ NONSTATIONARY_T_BATCHES = 180
 N_BASE_ATTACK_SAMPLES = 3000
 GAMMA_LEAD = 2
 
-# Nonstationary settings
 SW_WINDOW_BATCHES = 30
 DISCOUNT_GAMMA = 0.985
 CUSUM_EPS = 0.02
@@ -78,7 +70,6 @@ PH_DELTA = 0.01
 PH_LAMBDA = 8.0
 PH_MIN_SAMPLES = 50
 
-# Defense sweeps
 BATCHING_GRID = [1, 5, 10, 20, 50, 100]
 LDP_EPS_GRID = [0.2, 0.5, 1.0, 2.0, 4.0, float("inf")]
 DITHER_SIGMA_GRID = [0.0, 0.01, 0.03, 0.05, 0.1]
@@ -156,7 +147,7 @@ setup_paper_style()
 
 
 # ============================================================
-# Utilities (path / reading style aligned with user code)
+# Utilities
 # ============================================================
 
 def safe_listdir(path: str):
@@ -193,6 +184,8 @@ def find_file_fuzzy(root: str, include_keywords):
             s += 4
         if ".txt" in low:
             s += 3
+        if "." not in os.path.basename(low):
+            s += 2
         return -s
 
     return sorted(candidates, key=score)[0]
@@ -525,13 +518,13 @@ def prepare_dataset(df, name, target_col):
     return PreparedDataset(name=name, raw_df=df, X_proc=X_proc, y=y)
 
 
-def load_all_prepared_datasets():
-    print("[INFO] Files under ROOT:")
-    for x in safe_listdir(ROOT):
+def load_all_prepared_datasets(data_root: str):
+    print("[INFO] Files under data_root:")
+    for x in safe_listdir(data_root):
         print("   ", x)
 
-    adult_df = load_adult(ROOT)
-    bank_df = load_bank_marketing(ROOT)
+    adult_df = load_adult(data_root)
+    bank_df = load_bank_marketing(data_root)
 
     adult = prepare_dataset(adult_df, "Adult", "income")
     bank = prepare_dataset(bank_df, "BankMarketing", "target")
@@ -1318,7 +1311,7 @@ def plot_relative_improvement_paper(df_final, xcol, xvalues, title, outpath):
 # Main experiments
 # ============================================================
 
-def run_stationary_baselines(prepared_map):
+def run_stationary_baselines(prepared_map, outdir: str, figdir: str):
     env_rows, final_rows, curve_rows = [], [], []
 
     for dataset_name in DATASET_ORDER:
@@ -1361,29 +1354,29 @@ def run_stationary_baselines(prepared_map):
     df_final = pd.DataFrame(final_rows)
     df_curve = pd.concat(curve_rows, axis=0, ignore_index=True)
 
-    df_env.to_csv(os.path.join(OUTDIR, "stationary_environment_summary.csv"), index=False)
-    df_final.to_csv(os.path.join(OUTDIR, "stationary_baselines_final.csv"), index=False)
-    df_curve.to_csv(os.path.join(OUTDIR, "stationary_baselines_curves_long.csv"), index=False)
+    df_env.to_csv(os.path.join(outdir, "stationary_environment_summary.csv"), index=False)
+    df_final.to_csv(os.path.join(outdir, "stationary_baselines_final.csv"), index=False)
+    df_curve.to_csv(os.path.join(outdir, "stationary_baselines_curves_long.csv"), index=False)
 
     sig = pairwise_significance(df_final, group_cols=["dataset"], metric="final_regret")
-    sig.to_csv(os.path.join(OUTDIR, "pairwise_significance_stationary.csv"), index=False)
+    sig.to_csv(os.path.join(outdir, "pairwise_significance_stationary.csv"), index=False)
 
     for ds in DATASET_ORDER:
         plot_regret_curves_paper(
             df_curve[df_curve["dataset"] == ds],
             title=f"Stationary baselines on {ds}",
-            outpath=os.path.join(FIGDIR, f"stationary_regret_{ds}.png")
+            outpath=os.path.join(figdir, f"stationary_regret_{ds}.png")
         )
         plot_boxplot_paper(
             df_final[df_final["dataset"] == ds],
             title=f"Stationary final regret on {ds}",
-            outpath=os.path.join(FIGDIR, f"stationary_boxplot_{ds}.png")
+            outpath=os.path.join(figdir, f"stationary_boxplot_{ds}.png")
         )
 
     return df_env, df_final, df_curve
 
 
-def run_nonstationary_baselines(prepared_map):
+def run_nonstationary_baselines(prepared_map, outdir: str, figdir: str):
     final_rows, curve_rows = [], []
 
     for dataset_name in DATASET_ORDER:
@@ -1412,22 +1405,22 @@ def run_nonstationary_baselines(prepared_map):
     df_final = pd.DataFrame(final_rows)
     df_curve = pd.concat(curve_rows, axis=0, ignore_index=True)
 
-    df_final.to_csv(os.path.join(OUTDIR, "nonstationary_baselines_final.csv"), index=False)
-    df_curve.to_csv(os.path.join(OUTDIR, "nonstationary_baselines_curves_long.csv"), index=False)
+    df_final.to_csv(os.path.join(outdir, "nonstationary_baselines_final.csv"), index=False)
+    df_curve.to_csv(os.path.join(outdir, "nonstationary_baselines_curves_long.csv"), index=False)
 
     sig = pairwise_significance(df_final, group_cols=["dataset"], metric="final_regret")
-    sig.to_csv(os.path.join(OUTDIR, "pairwise_significance_nonstationary.csv"), index=False)
+    sig.to_csv(os.path.join(outdir, "pairwise_significance_nonstationary.csv"), index=False)
 
     for ds in DATASET_ORDER:
         plot_regret_curves_paper(
             df_curve[df_curve["dataset"] == ds],
             title=f"Nonstationary baselines on {ds}",
-            outpath=os.path.join(FIGDIR, f"nonstationary_regret_{ds}.png")
+            outpath=os.path.join(figdir, f"nonstationary_regret_{ds}.png")
         )
         plot_boxplot_paper(
             df_final[df_final["dataset"] == ds],
             title=f"Nonstationary final regret on {ds}",
-            outpath=os.path.join(FIGDIR, f"nonstationary_boxplot_{ds}.png")
+            outpath=os.path.join(figdir, f"nonstationary_boxplot_{ds}.png")
         )
 
     return df_final, df_curve
@@ -1449,7 +1442,7 @@ def summarize_tradeoff(final_df, defense_name):
     return pd.DataFrame(rows)
 
 
-def run_defense_tradeoff(prepared_map):
+def run_defense_tradeoff(prepared_map, outdir: str, figdir: str):
     long_rows = []
     final_rows = []
 
@@ -1457,7 +1450,6 @@ def run_defense_tradeoff(prepared_map):
         prepared = prepared_map[dataset_name]
         env = build_stationary_env(prepared, K, DEFAULT_TAU, Q_DEFENSE, N_BASE_ATTACK_SAMPLES, seed=123)
 
-        # batching
         for tau in BATCHING_GRID:
             print(f"[Defense-batching] dataset={dataset_name}, tau={tau}")
             for seed in SEEDS:
@@ -1471,7 +1463,6 @@ def run_defense_tradeoff(prepared_map):
                     "dataset": dataset_name, "defense": "batching", "strength": tau, "seed": seed, **final
                 })
 
-        # ldp
         for eps in LDP_EPS_GRID:
             print(f"[Defense-ldp] dataset={dataset_name}, eps={eps}")
             for seed in SEEDS:
@@ -1486,7 +1477,6 @@ def run_defense_tradeoff(prepared_map):
                     "dataset": dataset_name, "defense": "ldp", "strength": val, "seed": seed, **final
                 })
 
-        # dither
         for sigma in DITHER_SIGMA_GRID:
             print(f"[Defense-dither] dataset={dataset_name}, sigma={sigma}")
             for seed in SEEDS:
@@ -1500,7 +1490,6 @@ def run_defense_tradeoff(prepared_map):
                     "dataset": dataset_name, "defense": "dither", "strength": sigma, "seed": seed, **final
                 })
 
-        # coarsening
         level_map = {"exact": 0, "binary": 1, "3bin": 3, "5bin": 5}
         for mode in COARSENING_GRID:
             print(f"[Defense-coarsening] dataset={dataset_name}, mode={mode}")
@@ -1515,7 +1504,6 @@ def run_defense_tradeoff(prepared_map):
                     "dataset": dataset_name, "defense": "coarsening", "strength": level_map[mode], "seed": seed, **final
                 })
 
-        # equalization
         for alpha in EQUALIZATION_GRID:
             print(f"[Defense-equalization] dataset={dataset_name}, alpha={alpha}")
             for seed in SEEDS:
@@ -1529,7 +1517,6 @@ def run_defense_tradeoff(prepared_map):
                     "dataset": dataset_name, "defense": "equalization", "strength": alpha, "seed": seed, **final
                 })
 
-        # motion
         for amp in MOTION_AMPLITUDE_GRID:
             for period in MOTION_PERIOD_GRID:
                 print(f"[Defense-motion] dataset={dataset_name}, amp={amp}, period={period}")
@@ -1556,8 +1543,8 @@ def run_defense_tradeoff(prepared_map):
     df_long = pd.concat(long_rows, axis=0, ignore_index=True)
     df_final = pd.DataFrame(final_rows)
 
-    df_long.to_csv(os.path.join(OUTDIR, "defense_tradeoff_long.csv"), index=False)
-    df_final.to_csv(os.path.join(OUTDIR, "defense_tradeoff_final.csv"), index=False)
+    df_long.to_csv(os.path.join(outdir, "defense_tradeoff_long.csv"), index=False)
+    df_final.to_csv(os.path.join(outdir, "defense_tradeoff_final.csv"), index=False)
 
     all_summaries = []
 
@@ -1569,10 +1556,9 @@ def run_defense_tradeoff(prepared_map):
             summary,
             xcol="strength",
             title_prefix=f"{defense.capitalize()} trade-off",
-            out_prefix=os.path.join(FIGDIR, f"tradeoff_{defense}")
+            out_prefix=os.path.join(figdir, f"tradeoff_{defense}")
         )
 
-    # motion plots by period
     motion = df_final[df_final["defense"] == "motion"].copy()
     motion_summary_rows = []
     for (ds, amp, period), sub in motion.groupby(["dataset", "strength", "motion_period"]):
@@ -1602,10 +1588,10 @@ def run_defense_tradeoff(prepared_map):
             ax.set_ylabel(ylabel)
             ax.set_title(f"Quantile motion on {ds}: {ylabel}")
             ax.legend(ncol=2, loc="best")
-            savefig_paper(os.path.join(FIGDIR, f"tradeoff_motion_{ds}_{metric}.png"))
+            savefig_paper(os.path.join(figdir, f"tradeoff_motion_{ds}_{metric}.png"))
 
     summary_df = pd.concat(all_summaries, axis=0, ignore_index=True)
-    summary_df.to_csv(os.path.join(OUTDIR, "defense_tradeoff_summary.csv"), index=False)
+    summary_df.to_csv(os.path.join(outdir, "defense_tradeoff_summary.csv"), index=False)
 
     return df_long, df_final, summary_df
 
@@ -1614,8 +1600,7 @@ def run_defense_tradeoff(prepared_map):
 # Extra summary visualizations
 # ============================================================
 
-def make_combined_heatmaps(stationary_final, nonstationary_final):
-    # stationary: mean final regret
+def make_combined_heatmaps(stationary_final, nonstationary_final, figdir: str):
     mat = np.zeros((len(DATASET_ORDER), len(STATIONARY_ALGORITHMS)), dtype=float)
     for i, ds in enumerate(DATASET_ORDER):
         for j, algo in enumerate(STATIONARY_ALGORITHMS):
@@ -1627,12 +1612,11 @@ def make_combined_heatmaps(stationary_final, nonstationary_final):
         row_labels=DATASET_ORDER,
         col_labels=[LABEL_MAP[a] for a in STATIONARY_ALGORITHMS],
         title="Stationary mean final regret",
-        outpath=os.path.join(FIGDIR, "heatmap_stationary_mean_final_regret.png"),
+        outpath=os.path.join(figdir, "heatmap_stationary_mean_final_regret.png"),
         fmt=".1f",
         cmap="magma"
     )
 
-    # nonstationary: mean final regret
     mat2 = np.zeros((len(DATASET_ORDER), len(NONSTATIONARY_ALGORITHMS)), dtype=float)
     for i, ds in enumerate(DATASET_ORDER):
         for j, algo in enumerate(NONSTATIONARY_ALGORITHMS):
@@ -1644,10 +1628,27 @@ def make_combined_heatmaps(stationary_final, nonstationary_final):
         row_labels=DATASET_ORDER,
         col_labels=[LABEL_MAP.get(a, a) for a in NONSTATIONARY_ALGORITHMS],
         title="Nonstationary mean final regret",
-        outpath=os.path.join(FIGDIR, "heatmap_nonstationary_mean_final_regret.png"),
+        outpath=os.path.join(figdir, "heatmap_nonstationary_mean_final_regret.png"),
         fmt=".1f",
         cmap="viridis"
     )
+
+
+# ============================================================
+# CLI
+# ============================================================
+
+def parse_args():
+    script_dir = Path(__file__).resolve().parent
+    project_root_default = script_dir.parent if script_dir.name == "scripts" else script_dir
+    data_root_default = project_root_default / "data"
+    outdir_default = project_root_default / "outputs" / "paper_final_tradeoff_and_baselines"
+
+    parser = argparse.ArgumentParser(description="Defense trade-off and baseline experiments.")
+    parser.add_argument("--project_root", type=str, default=str(project_root_default))
+    parser.add_argument("--data_root", type=str, default=str(data_root_default))
+    parser.add_argument("--outdir", type=str, default=str(outdir_default))
+    return parser.parse_args()
 
 
 # ============================================================
@@ -1655,10 +1656,27 @@ def make_combined_heatmaps(stationary_final, nonstationary_final):
 # ============================================================
 
 def main():
-    prepared_map = load_all_prepared_datasets()
+    args = parse_args()
+
+    project_root = Path(args.project_root).resolve()
+    data_root = Path(args.data_root).resolve()
+    outdir = Path(args.outdir).resolve()
+    figdir = outdir / "figures"
+    outdir.mkdir(parents=True, exist_ok=True)
+    figdir.mkdir(parents=True, exist_ok=True)
+
+    print(f"[INFO] PROJECT_ROOT={project_root}")
+    print(f"[INFO] DATA_ROOT={data_root}")
+    print(f"[INFO] OUTDIR={outdir}")
+    print(f"[INFO] FIGDIR={figdir}")
+
+    prepared_map = load_all_prepared_datasets(str(data_root))
 
     run_config = {
-        "root": ROOT,
+        "project_root": str(project_root),
+        "data_root": str(data_root),
+        "outdir": str(outdir),
+        "figdir": str(figdir),
         "datasets": DATASET_ORDER,
         "seeds": SEEDS,
         "K": K,
@@ -1669,24 +1687,24 @@ def main():
         "N_BASE_ATTACK_SAMPLES": N_BASE_ATTACK_SAMPLES,
         "GAMMA_LEAD": GAMMA_LEAD,
     }
-    with open(os.path.join(OUTDIR, "run_config.json"), "w", encoding="utf-8") as f:
+    with open(outdir / "run_config.json", "w", encoding="utf-8") as f:
         json.dump(run_config, f, indent=2)
 
     print("\n[INFO] Running stationary baselines...")
-    stationary_env, stationary_final, stationary_curve = run_stationary_baselines(prepared_map)
+    stationary_env, stationary_final, stationary_curve = run_stationary_baselines(prepared_map, str(outdir), str(figdir))
 
     print("\n[INFO] Running nonstationary baselines...")
-    nonstationary_final, nonstationary_curve = run_nonstationary_baselines(prepared_map)
+    nonstationary_final, nonstationary_curve = run_nonstationary_baselines(prepared_map, str(outdir), str(figdir))
 
     print("\n[INFO] Running defense trade-off...")
-    defense_long, defense_final, defense_summary = run_defense_tradeoff(prepared_map)
+    defense_long, defense_final, defense_summary = run_defense_tradeoff(prepared_map, str(outdir), str(figdir))
 
     print("\n[INFO] Making combined heatmaps...")
-    make_combined_heatmaps(stationary_final, nonstationary_final)
+    make_combined_heatmaps(stationary_final, nonstationary_final, str(figdir))
 
     print("\n[INFO] All experiments completed.")
-    print(f"[INFO] Outputs saved to: {OUTDIR}")
-    print(f"[INFO] Figures saved to: {FIGDIR}")
+    print(f"[INFO] Outputs saved to: {outdir}")
+    print(f"[INFO] Figures saved to: {figdir}")
 
 
 if __name__ == "__main__":
