@@ -8,7 +8,8 @@ Design choice:
     * Bernoulli survival KL-UCB
     * scaled index = r_hat[k] * q_k
     * empirical leader + periodic leader sampling
-    * fixed line graph N(k) = {k-1, k, k+1}
+    * fixed line graph N(k) = {k-1, k+1}
+      together with k itself in implementation
 - Only the learner's impact scale is misspecified.
 - True environment remains unchanged.
 - Regret is always evaluated under the true environment.
@@ -19,16 +20,16 @@ This version enriches the appendix visualization layout:
 - add opt-arm shift heatmap
 - add regret-gap boxplot
 - add arm-frequency heatmaps
-
-This avoids overusing line charts in the appendix.
 """
 
 import os
 import re
 import json
 import math
+import argparse
 import warnings
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -49,10 +50,6 @@ warnings.filterwarnings("ignore")
 # ============================================================
 # Config
 # ============================================================
-
-ROOT = r"F:\NIPS"
-OUTDIR = os.path.join(ROOT, "outputs_appendix_impact_misspec_fixed_linegraph")
-os.makedirs(OUTDIR, exist_ok=True)
 
 SEEDS = list(range(30))
 DATASET_ORDER = ["Adult", "BankMarketing"]
@@ -81,14 +78,9 @@ LABEL_MAP = {
 
 BOOTSTRAP_B = 10000
 BOOTSTRAP_RANDOM_SEED = 12345
-
-# for arm-frequency visualization
 TAIL_BATCHES_FOR_FREQ = 40
 
 np.set_printoptions(precision=4, suppress=True)
-
-print(f"[INFO] ROOT={ROOT}")
-print(f"[INFO] OUTDIR={OUTDIR}")
 
 
 # ============================================================
@@ -129,6 +121,8 @@ def find_file_fuzzy(root: str, include_keywords: List[str]) -> Optional[str]:
             s += 4
         if ".txt" in low:
             s += 3
+        if "." not in os.path.basename(low):
+            s += 2
         return -s
 
     return sorted(candidates, key=score)[0]
@@ -583,6 +577,7 @@ def build_stationary_batched_env(
     tau: int,
     q_defense: float,
     n_base_attack_samples: int,
+    outdir: str,
     seed: int = 123
 ) -> StationaryBatchedEnv:
     rng = np.random.RandomState(seed)
@@ -657,7 +652,7 @@ def build_stationary_batched_env(
             best_pack = (dname, ps, means)
 
     pd.DataFrame(diagnostics).to_csv(
-        os.path.join(OUTDIR, f"{prepared.name}_env_direction_diagnostics.csv"), index=False
+        os.path.join(outdir, f"{prepared.name}_env_direction_diagnostics.csv"), index=False
     )
 
     dname, success_probs, means_true = best_pack
@@ -704,16 +699,13 @@ def build_misspecified_impacts(impacts_true: np.ndarray, alpha: float, mode: str
         z = np.cos(2.0 * np.pi * x)
         z = z / (np.max(np.abs(z)) + 1e-12)
         raw = r * (1.0 + 0.95 * z)
-
     elif mode == "wiggle":
         z = np.sin(2.5 * np.pi * x)
         z = z / (np.max(np.abs(z)) + 1e-12)
         raw = r * (1.0 + 1.10 * z)
-
     elif mode == "reverse_tilt":
         z = np.linspace(-1.0, 1.0, K_local)
         raw = r * (1.0 - 1.35 * z)
-
     else:
         raise ValueError(f"Unknown misspecification mode: {mode}")
 
@@ -773,11 +765,6 @@ class UCBTrimmedBatch:
 
 
 class OSUBKLTrimmedBatch:
-    """
-    Keep the paper's OSUB-KL construction:
-    fixed line graph, local neighborhood, leader sampling, scaled Bernoulli KL index.
-    Only impacts used by the learner may be misspecified.
-    """
     def __init__(self, impacts_for_learning: np.ndarray, gamma_lead: int = 2):
         self.impacts = np.asarray(impacts_for_learning, dtype=float)
         self.K = len(self.impacts)
@@ -920,13 +907,13 @@ def run_single_seed_stationary_batched_misspecified(
 # Build datasets
 # ============================================================
 
-def load_all_prepared_datasets() -> Dict[str, PreparedDataset]:
-    print("[INFO] Files under ROOT:")
-    for x in safe_listdir(ROOT):
+def load_all_prepared_datasets(data_root: str) -> Dict[str, PreparedDataset]:
+    print("[INFO] Files under data_root:")
+    for x in safe_listdir(data_root):
         print("   ", x)
 
-    adult_df = load_adult(ROOT)
-    bank_df = load_bank_marketing(ROOT)
+    adult_df = load_adult(data_root)
+    bank_df = load_bank_marketing(data_root)
 
     adult = prepare_dataset(adult_df, "Adult", "income")
     bank = prepare_dataset(bank_df, "BankMarketing", "target")
@@ -946,13 +933,10 @@ def _ensure_alpha_sorted(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ============================================================
-# Plotting: impact profiles
+# Plotting
 # ============================================================
 
-def plot_impact_profiles(env_map: Dict[str, StationaryBatchedEnv]):
-    """
-    A compact profile figure. Keep only one such figure family.
-    """
+def plot_impact_profiles(env_map: Dict[str, StationaryBatchedEnv], outdir: str):
     for dataset in DATASET_ORDER:
         env = env_map[dataset]
         fig, ax = plt.subplots(figsize=(8.0, 4.8))
@@ -974,16 +958,12 @@ def plot_impact_profiles(env_map: Dict[str, StationaryBatchedEnv]):
         ax.legend(ncol=2, fontsize=8, frameon=True)
         plt.tight_layout()
 
-        outpath = os.path.join(OUTDIR, f"{dataset}_impact_profiles.png")
+        outpath = os.path.join(outdir, f"{dataset}_impact_profiles.png")
         plt.savefig(outpath, dpi=260)
         plt.close()
 
 
-# ============================================================
-# Plotting: win-rate heatmap
-# ============================================================
-
-def plot_win_rate_heatmap(df_final: pd.DataFrame):
+def plot_win_rate_heatmap(df_final: pd.DataFrame, outdir: str):
     mat = np.zeros((len(DATASET_ORDER), len(ALPHAS)), dtype=float)
 
     for i, ds in enumerate(DATASET_ORDER):
@@ -1011,19 +991,11 @@ def plot_win_rate_heatmap(df_final: pd.DataFrame):
     cbar.set_label("Win rate")
 
     plt.tight_layout()
-    plt.savefig(os.path.join(OUTDIR, "heatmap_winrate_vs_alpha.png"), dpi=260)
+    plt.savefig(os.path.join(outdir, "heatmap_winrate_vs_alpha.png"), dpi=260)
     plt.close()
 
 
-# ============================================================
-# Plotting: opt-arm shift heatmap
-# ============================================================
-
-def plot_opt_arm_shift_heatmap(df_diag: pd.DataFrame):
-    """
-    Color shows mis_opt_arm - true_opt_arm.
-    This directly visualizes perceived-optimum drift under misspecification.
-    """
+def plot_opt_arm_shift_heatmap(df_diag: pd.DataFrame, outdir: str):
     df_diag = _ensure_alpha_sorted(df_diag)
     mat = np.zeros((len(DATASET_ORDER), len(ALPHAS)), dtype=float)
 
@@ -1056,19 +1028,11 @@ def plot_opt_arm_shift_heatmap(df_diag: pd.DataFrame):
     cbar.set_label("mis-opt arm − true-opt arm")
 
     plt.tight_layout()
-    plt.savefig(os.path.join(OUTDIR, "heatmap_opt_arm_shift.png"), dpi=260)
+    plt.savefig(os.path.join(outdir, "heatmap_opt_arm_shift.png"), dpi=260)
     plt.close()
 
 
-# ============================================================
-# Plotting: regret-gap boxplot
-# ============================================================
-
-def plot_regret_gap_boxplot(df_final: pd.DataFrame, metric: str = "final_realized_regret"):
-    """
-    Plot gap = UCB regret - KLUCB_OSUB regret.
-    Positive => KL-UCB better.
-    """
+def plot_regret_gap_boxplot(df_final: pd.DataFrame, outdir: str, metric: str = "final_realized_regret"):
     work = df_final.copy()
     piv = work.pivot_table(
         index=["dataset", "alpha", "seed"],
@@ -1120,22 +1084,11 @@ def plot_regret_gap_boxplot(df_final: pd.DataFrame, metric: str = "final_realize
     axes[0].set_ylabel("Regret gap: UCB − KL-UCB")
     plt.suptitle("Seed-level regret gap under impact misspecification", y=1.02)
     plt.tight_layout()
-    plt.savefig(os.path.join(OUTDIR, f"boxplot_regret_gap_{metric}.png"), dpi=260, bbox_inches="tight")
+    plt.savefig(os.path.join(outdir, f"boxplot_regret_gap_{metric}.png"), dpi=260, bbox_inches="tight")
     plt.close()
 
 
-# ============================================================
-# Plotting: arm-frequency heatmap
-# ============================================================
-
-def plot_arm_frequency_heatmap(df_long: pd.DataFrame, tail_batches: int = 40):
-    """
-    For each dataset, show a 2-panel heatmap:
-    rows = alpha
-    cols = arm index
-    color = selection frequency in the last `tail_batches` batches
-    one panel per algorithm
-    """
+def plot_arm_frequency_heatmap(df_long: pd.DataFrame, outdir: str, tail_batches: int = 40):
     max_batch = int(df_long["batch"].max())
     batch_cut = max(1, max_batch - tail_batches + 1)
 
@@ -1148,7 +1101,6 @@ def plot_arm_frequency_heatmap(df_long: pd.DataFrame, tail_batches: int = 40):
             axes = [axes]
 
         vmin, vmax = 0.0, 1.0
-
         ims = []
         for ax, algo in zip(axes, ALGORITHMS):
             sub = tail_df[(tail_df["dataset"] == dataset) & (tail_df["algorithm"] == algo)].copy()
@@ -1186,7 +1138,7 @@ def plot_arm_frequency_heatmap(df_long: pd.DataFrame, tail_batches: int = 40):
 
         plt.suptitle(f"Arm concentration under misspecified impacts: {dataset}", y=1.02)
         plt.tight_layout()
-        plt.savefig(os.path.join(OUTDIR, f"{dataset}_heatmap_arm_frequency_tail{tail_batches}.png"),
+        plt.savefig(os.path.join(outdir, f"{dataset}_heatmap_arm_frequency_tail{tail_batches}.png"),
                     dpi=260, bbox_inches="tight")
         plt.close()
 
@@ -1226,11 +1178,39 @@ def build_stat_summary(df_final: pd.DataFrame) -> pd.DataFrame:
 
 
 # ============================================================
+# CLI
+# ============================================================
+
+def parse_args():
+    script_dir = Path(__file__).resolve().parent
+    project_root_default = script_dir.parent if script_dir.name == "scripts" else script_dir
+    data_root_default = project_root_default / "data"
+    outdir_default = project_root_default / "outputs" / "appendix_impact_misspec_fixed_linegraph"
+
+    parser = argparse.ArgumentParser(description="Impact-scale misspecification under fixed ordered neighborhoods.")
+    parser.add_argument("--project_root", type=str, default=str(project_root_default))
+    parser.add_argument("--data_root", type=str, default=str(data_root_default))
+    parser.add_argument("--outdir", type=str, default=str(outdir_default))
+    return parser.parse_args()
+
+
+# ============================================================
 # Main
 # ============================================================
 
 def main():
-    prepared_map = load_all_prepared_datasets()
+    args = parse_args()
+
+    project_root = Path(args.project_root).resolve()
+    data_root = Path(args.data_root).resolve()
+    outdir = Path(args.outdir).resolve()
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    print(f"[INFO] PROJECT_ROOT={project_root}")
+    print(f"[INFO] DATA_ROOT={data_root}")
+    print(f"[INFO] OUTDIR={outdir}")
+
+    prepared_map = load_all_prepared_datasets(str(data_root))
 
     env_map: Dict[str, StationaryBatchedEnv] = {}
     for name in DATASET_ORDER:
@@ -1240,6 +1220,7 @@ def main():
             tau=TAU,
             q_defense=Q_DEFENSE,
             n_base_attack_samples=N_BASE_ATTACK_SAMPLES,
+            outdir=str(outdir),
             seed=123
         )
 
@@ -1331,21 +1312,22 @@ def main():
     df_diag = pd.DataFrame(diag_rows)
     df_stat = build_stat_summary(df_final)
 
-    df_final.to_csv(os.path.join(OUTDIR, "impact_misspecification_final.csv"), index=False)
-    df_long.to_csv(os.path.join(OUTDIR, "impact_misspecification_long.csv"), index=False)
-    df_diag.to_csv(os.path.join(OUTDIR, "impact_misspecification_diagnostics.csv"), index=False)
-    df_stat.to_csv(os.path.join(OUTDIR, "impact_misspecification_stat_summary.csv"), index=False)
+    df_final.to_csv(os.path.join(outdir, "impact_misspecification_final.csv"), index=False)
+    df_long.to_csv(os.path.join(outdir, "impact_misspecification_long.csv"), index=False)
+    df_diag.to_csv(os.path.join(outdir, "impact_misspecification_diagnostics.csv"), index=False)
+    df_stat.to_csv(os.path.join(outdir, "impact_misspecification_stat_summary.csv"), index=False)
 
-    # Figures
-    plot_impact_profiles(env_map)
-    plot_win_rate_heatmap(df_final)
-    plot_opt_arm_shift_heatmap(df_diag)
-    plot_regret_gap_boxplot(df_final, metric="final_realized_regret")
-    plot_regret_gap_boxplot(df_final, metric="final_pseudo_regret")
-    plot_arm_frequency_heatmap(df_long, tail_batches=TAIL_BATCHES_FOR_FREQ)
+    plot_impact_profiles(env_map, str(outdir))
+    plot_win_rate_heatmap(df_final, str(outdir))
+    plot_opt_arm_shift_heatmap(df_diag, str(outdir))
+    plot_regret_gap_boxplot(df_final, str(outdir), metric="final_realized_regret")
+    plot_regret_gap_boxplot(df_final, str(outdir), metric="final_pseudo_regret")
+    plot_arm_frequency_heatmap(df_long, str(outdir), tail_batches=TAIL_BATCHES_FOR_FREQ)
 
     run_config = {
-        "root": ROOT,
+        "project_root": str(project_root),
+        "data_root": str(data_root),
+        "outdir": str(outdir),
         "datasets": DATASET_ORDER,
         "seeds": SEEDS,
         "K": K,
@@ -1360,11 +1342,11 @@ def main():
         "misspec_mode": MISSPEC_MODE,
         "tail_batches_for_freq": TAIL_BATCHES_FOR_FREQ
     }
-    with open(os.path.join(OUTDIR, "run_config.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(outdir, "run_config.json"), "w", encoding="utf-8") as f:
         json.dump(run_config, f, indent=2)
 
     print("\n[INFO] Done.")
-    print(f"[INFO] Outputs saved to: {OUTDIR}")
+    print(f"[INFO] Outputs saved to: {outdir}")
 
 
 if __name__ == "__main__":
