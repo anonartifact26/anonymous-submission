@@ -15,8 +15,10 @@ Robust to:
 import os
 import re
 import json
+import argparse
 import warnings
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 
 import numpy as np
@@ -31,17 +33,6 @@ from sklearn.decomposition import PCA
 
 warnings.filterwarnings("ignore")
 np.random.seed(2026)
-
-# ============================================================
-# Path config
-# ============================================================
-
-ROOT = r"F:\NIPS"
-OUTDIR = os.path.join(ROOT, "outputs_assumption_validation")
-os.makedirs(OUTDIR, exist_ok=True)
-
-print(f"[INFO] Using root directory: {ROOT}")
-print(f"[INFO] Output directory: {OUTDIR}")
 
 
 # ============================================================
@@ -391,7 +382,6 @@ def load_bank_marketing(root: str) -> pd.DataFrame:
     else:
         print("[INFO] Bank Marketing file not detected as ARFF. Trying CSV/semicolon parsing.")
         try:
-            # UCI Bank Marketing CSVs often use ;
             df = pd.read_csv(path, sep=";")
             if df.shape[1] < 2:
                 raise ValueError("Too few columns with semicolon parse.")
@@ -738,19 +728,47 @@ def write_summary_txt(df_all: pd.DataFrame, outpath: str):
 
 
 # ============================================================
+# CLI
+# ============================================================
+
+def parse_args():
+    script_dir = Path(__file__).resolve().parent
+    project_root_default = script_dir.parent if script_dir.name == "scripts" else script_dir
+    data_root_default = project_root_default / "data"
+    outdir_default = project_root_default / "outputs" / "assumption_validation"
+
+    parser = argparse.ArgumentParser(description="Assumption validation for dataset-built simulators.")
+    parser.add_argument("--project_root", type=str, default=str(project_root_default))
+    parser.add_argument("--data_root", type=str, default=str(data_root_default))
+    parser.add_argument("--outdir", type=str, default=str(outdir_default))
+    return parser.parse_args()
+
+
+# ============================================================
 # Main
 # ============================================================
 
 def main():
-    print("[INFO] Directory listing under root:")
-    for name in safe_listdir(ROOT):
+    args = parse_args()
+
+    project_root = Path(args.project_root).resolve()
+    data_root = Path(args.data_root).resolve()
+    outdir = Path(args.outdir).resolve()
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    print(f"[INFO] PROJECT_ROOT={project_root}")
+    print(f"[INFO] DATA_ROOT={data_root}")
+    print(f"[INFO] OUTDIR={outdir}")
+
+    print("[INFO] Directory listing under data_root:")
+    for name in safe_listdir(str(data_root)):
         print("   ", name)
 
     q_values = [0.10, 0.15, 0.25]
     K = 11
 
-    adult_df = load_adult(ROOT)
-    bank_df = load_bank_marketing(ROOT)
+    adult_df = load_adult(str(data_root))
+    bank_df = load_bank_marketing(str(data_root))
 
     adult = prepare_dataset(adult_df, "Adult", "income")
     bank = prepare_dataset(bank_df, "BankMarketing", "target")
@@ -763,17 +781,19 @@ def main():
     )
 
     all_table = pd.concat([adult_table, bank_table], axis=0, ignore_index=True)
-    csv_path = os.path.join(OUTDIR, "assumption_validation_table.csv")
+    csv_path = outdir / "assumption_validation_table.csv"
     all_table.to_csv(csv_path, index=False)
 
-    adult_fig = os.path.join(OUTDIR, "adult_assumption_validation.png")
-    bank_fig = os.path.join(OUTDIR, "bank_marketing_assumption_validation.png")
+    adult_fig = outdir / "adult_assumption_validation.png"
+    bank_fig = outdir / "bank_marketing_assumption_validation.png"
 
-    plot_validation_figure("Adult", adult_oracle, q_values, adult_surv_raw, adult_surv_proj, adult_util, adult_fig)
-    plot_validation_figure("Bank Marketing", bank_oracle, q_values, bank_surv_raw, bank_surv_proj, bank_util, bank_fig)
+    plot_validation_figure("Adult", adult_oracle, q_values, adult_surv_raw, adult_surv_proj, adult_util, str(adult_fig))
+    plot_validation_figure("Bank Marketing", bank_oracle, q_values, bank_surv_raw, bank_surv_proj, bank_util, str(bank_fig))
 
     meta = {
-        "root_used": ROOT,
+        "project_root": str(project_root),
+        "data_root": str(data_root),
+        "outdir": str(outdir),
         "Adult": {
             "direction": adult_oracle.direction_name,
             "arms": adult_oracle.arms.tolist(),
@@ -786,12 +806,12 @@ def main():
         }
     }
 
-    meta_path = os.path.join(OUTDIR, "assumption_validation_meta.json")
+    meta_path = outdir / "assumption_validation_meta.json"
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
-    summary_path = os.path.join(OUTDIR, "assumption_validation_summary.txt")
-    write_summary_txt(all_table, summary_path)
+    summary_path = outdir / "assumption_validation_summary.txt"
+    write_summary_txt(all_table, str(summary_path))
 
     print("\n[INFO] Done.")
     print(f"[INFO] CSV saved to: {csv_path}")
